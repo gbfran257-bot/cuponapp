@@ -15,6 +15,51 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
 import '../models/coupon.dart' show kCouponCategories;
+import 'contract_screen.dart';
+
+/// ─────────────────────────────────────────────────────────────
+/// Tipos de cupón (los mismos que usa el súper administrador para
+/// calcular las comisiones).
+/// ─────────────────────────────────────────────────────────────
+const Map<String, String> kCouponTypeLabels = {
+  'producto': 'Cupón por producto',
+  'porcentaje': 'Descuento en porcentaje (%)',
+  'dinero': 'Descuento en dinero (\$)',
+};
+
+/// Promociones predefinidas para cupones "por producto".
+const List<String> kProductPromos = [
+  '2x1',
+  '3x2',
+  '2do producto al 50%',
+  'Producto gratis',
+  'Bebida gratis',
+  'Postre gratis',
+  'Envío gratis',
+];
+
+/// Opción para escribir una promoción distinta a las predefinidas.
+const String kOtherPromo = 'Otro (escribir)';
+
+/// Deja solo el número del descuento ("20%" -> "20", "\$50" -> "50").
+/// Para cupones por producto el texto se conserva tal cual.
+String _plainDiscount(String type, String discount) {
+  if (type == 'producto') return discount;
+  return discount.replaceAll(',', '.').replaceAll(RegExp(r'[^0-9.]'), '');
+}
+
+/// Texto final que se guarda/mostrará: "20%", "\$50" o el producto.
+String _formatDiscount(String type, String raw) {
+  final t = raw.trim();
+  switch (type) {
+    case 'porcentaje':
+      return '${_plainDiscount(type, t)}%';
+    case 'dinero':
+      return '\$${_plainDiscount(type, t)}';
+    default:
+      return t;
+  }
+}
 
 /// ─────────────────────────────────────────────────────────────
 /// Modelo local de cupón para el panel de administrador, ahora
@@ -27,10 +72,19 @@ class AdminCoupon {
   String name;
   String business;
   String discount;
+  // 'producto' | 'porcentaje' | 'dinero'
+  String couponType;
   String expiresAt; // dd/mm/aaaa, para mostrar en la lista/formulario
   String category;
   // Cuántas veces se puede capturar este cupón en total.
   int maxCaptures;
+  // Cuántas veces ya se capturó (usuarios finales) y cuántas quedan.
+  int capturesCount;
+  int remainingCaptures;
+  // Cuántas veces se ha canjeado (cobrado) este cupón.
+  int redeemedCount;
+  // Si ya pasó su fecha de vencimiento (lo calcula el servidor).
+  bool isExpired;
   // Ruta local de una foto recién elegida (aún no subida).
   String? photoPath;
   // URL ya subida en el servidor (si el cupón ya tenía foto).
@@ -46,15 +100,29 @@ class AdminCoupon {
     required this.name,
     required this.business,
     required this.discount,
+    this.couponType = 'porcentaje',
     required this.expiresAt,
     required this.category,
     this.maxCaptures = 1,
+    this.capturesCount = 0,
+    this.remainingCaptures = 1,
+    this.redeemedCount = 0,
+    this.isExpired = false,
     this.photoPath,
     this.photoUrl,
     this.latitude,
     this.longitude,
     this.active = true,
   });
+
+  /// Estado visible para el resumen y los filtros del panel.
+  /// Prioridad: dado de baja > vencido > agotado > activo.
+  CouponStatus get status {
+    if (!active) return CouponStatus.inactive;
+    if (isExpired) return CouponStatus.expired;
+    if (remainingCaptures <= 0) return CouponStatus.soldOut;
+    return CouponStatus.active;
+  }
 
   factory AdminCoupon.fromJson(Map<String, dynamic> json) => AdminCoupon(
         id: json['id'] as String,
@@ -63,15 +131,30 @@ class AdminCoupon {
         name: json['name'] as String,
         business: json['business'] as String,
         discount: json['discount'] as String,
+        couponType: json['couponType'] as String? ?? 'porcentaje',
         expiresAt: json['expiresAt'] as String? ?? '',
         category: json['category'] as String? ?? 'Otro',
         maxCaptures: (json['maxCaptures'] as num?)?.toInt() ?? 1,
+        capturesCount: (json['capturesCount'] as num?)?.toInt() ?? 0,
+        remainingCaptures: (json['remainingCaptures'] as num?)?.toInt() ?? 1,
+        redeemedCount: (json['redeemedCount'] as num?)?.toInt() ?? 0,
+        isExpired: json['isExpired'] as bool? ?? false,
         photoUrl: json['photoUrl'] as String?,
         latitude: (json['latitude'] as num?)?.toDouble(),
         longitude: (json['longitude'] as num?)?.toDouble(),
         active: json['active'] as bool? ?? true,
       );
 }
+
+/// Estado de un cupón, usado para el resumen y los filtros.
+enum CouponStatus { active, inactive, expired, soldOut }
+
+const Map<CouponStatus, String> kCouponStatusLabels = {
+  CouponStatus.active: 'Activos',
+  CouponStatus.inactive: 'Dados de baja',
+  CouponStatus.expired: 'Vencidos',
+  CouponStatus.soldOut: 'Agotados',
+};
 
 /// Convierte "dd/mm/aaaa" -> "aaaa-mm-dd" (lo que espera el backend).
 /// Devuelve null si el formato no es válido.
@@ -109,11 +192,13 @@ class _AdminScreenState extends State<AdminScreen>
   bool _loading = true;
   String? _loadError;
   List<AdminCoupon> _coupons = [];
+  // Nombres de los negocios asignados a este administrador.
+  List<String> _myBusinesses = [];
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
     _loadCoupons();
   }
 
@@ -130,9 +215,13 @@ class _AdminScreenState extends State<AdminScreen>
     });
     try {
       final data = await apiService.getAdminCoupons();
+      final businessesData = await apiService.getMyBusinesses();
       setState(() {
         _coupons = data
             .map((c) => AdminCoupon.fromJson(c as Map<String, dynamic>))
+            .toList();
+        _myBusinesses = businessesData
+            .map((b) => (b as Map<String, dynamic>)['name'] as String)
             .toList();
         _loading = false;
       });
@@ -141,9 +230,10 @@ class _AdminScreenState extends State<AdminScreen>
         _loadError = e.message;
         _loading = false;
       });
-    } catch (e) {
+    } catch (e, st) {
+      debugPrint('Error en _loadCoupons: $e\n$st');
       setState(() {
-        _loadError = 'No se pudo conectar con el servidor. Revisa tu conexión.';
+        _loadError = 'Error al cargar los datos: $e';
         _loading = false;
       });
     }
@@ -160,13 +250,18 @@ class _AdminScreenState extends State<AdminScreen>
         title: const Text('Panel de administrador'),
         bottom: TabBar(
           controller: _tabController,
-          labelColor: Colors.white,
-          indicatorColor: Colors.white,
+          labelColor: Colors.black,
+          unselectedLabelColor: Colors.black54,
+          indicatorColor: Colors.black,
           tabs: const [
             Tab(icon: Icon(Icons.qr_code_scanner), text: 'Canjear'),
             Tab(
               icon: Icon(Icons.confirmation_number_outlined),
               text: 'Cupones',
+            ),
+            Tab(
+              icon: Icon(Icons.description_outlined),
+              text: 'Contratos',
             ),
           ],
         ),
@@ -213,6 +308,7 @@ class _AdminScreenState extends State<AdminScreen>
                       onToggleActive: _toggleActive,
                       onDelete: _deleteCoupon,
                     ),
+          const ContractsScreen(),
         ],
       ),
     );
@@ -227,6 +323,9 @@ class _AdminScreenState extends State<AdminScreen>
       if (!mounted) return;
       final couponName = (data['coupon'] as Map?)?['name'] as String? ?? code;
       _showMsg('Cupón "$couponName" canjeado ✅');
+      // Recarga la lista para que el contador "Canjeados" y el filtro
+      // reflejen el canje de inmediato.
+      await _loadCoupons();
     } on ApiException catch (e) {
       _showMsg(e.message, error: true);
     } catch (e) {
@@ -237,6 +336,14 @@ class _AdminScreenState extends State<AdminScreen>
   // ── CRUD ────────────────────────────────────────────────────
 
   Future<void> _createCoupon() async {
+    if (_myBusinesses.isEmpty) {
+      _showMsg(
+        'No tienes negocios asignados. Pide al súper administrador que te asigne uno.',
+        error: true,
+      );
+      return;
+    }
+
     final result = await _showCouponForm(context);
     if (result == null) return;
 
@@ -258,6 +365,7 @@ class _AdminScreenState extends State<AdminScreen>
         photo: result.photoPath != null ? File(result.photoPath!) : null,
         tokenId: result.tokenId,
         maxCaptures: result.maxCaptures,
+        couponType: result.couponType,
       );
       await _loadCoupons();
       _showMsg('Cupón dado de alta ✅');
@@ -292,6 +400,7 @@ class _AdminScreenState extends State<AdminScreen>
         // el backend conserva la que ya tenía.
         photo: result.photoPath != null ? File(result.photoPath!) : null,
         maxCaptures: result.maxCaptures,
+        couponType: result.couponType,
       );
       await _loadCoupons();
       _showMsg('Cupón actualizado ✅');
@@ -354,11 +463,15 @@ class _AdminScreenState extends State<AdminScreen>
   }) {
     return showDialog<_CouponFormResult>(
       context: context,
-      builder: (context) => _CouponFormDialog(initial: initial),
+      builder: (context) => _CouponFormDialog(
+        initial: initial,
+        businesses: _myBusinesses,
+      ),
     );
   }
 
   void _showMsg(String msg, {bool error = false}) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(msg),
@@ -472,6 +585,11 @@ class _QrScannerScreen extends StatefulWidget {
 }
 
 class _QrScannerScreenState extends State<_QrScannerScreen> {
+  // Evita que varias detecciones seguidas hagan varios Navigator.pop
+  // (los pops extra cerraban también la pantalla de atrás y dejaban la
+  // app en negro).
+  bool _handled = false;
+
   // Sin `formats` mobile_scanner ya detecta QR y la mayoría de códigos
   // de barras por defecto, pero los listamos explícitamente para
   // asegurar que estos formatos comunes (QR, barras 1D típicas de
@@ -500,19 +618,30 @@ class _QrScannerScreenState extends State<_QrScannerScreen> {
     super.dispose();
   }
 
+  Future<void> _onDetect(BarcodeCapture capture) async {
+    if (_handled) return;
+
+    final value = capture.barcodes.firstOrNull?.rawValue;
+    if (value == null || value.trim().isEmpty) return;
+
+    _handled = true;
+
+    // Detiene la cámara antes de cerrar para que no lleguen más eventos.
+    try {
+      await _controller.stop();
+    } catch (_) {}
+
+    if (!mounted) return;
+    Navigator.pop(context, value.trim());
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Escanear código')),
       body: MobileScanner(
         controller: _controller,
-        onDetect: (capture) {
-          final barcode = capture.barcodes.firstOrNull;
-          final value = barcode?.rawValue;
-          if (value != null) {
-            Navigator.pop(context, value);
-          }
-        },
+        onDetect: _onDetect,
       ),
     );
   }
@@ -520,7 +649,38 @@ class _QrScannerScreenState extends State<_QrScannerScreen> {
 
 /// ───────────────────────── TAB: CUPONES (CRUD) ─────────────────────────
 
-class _CouponsTab extends StatelessWidget {
+/// Filtro de la lista. "all" no filtra nada.
+enum _CouponFilter { all, active, inactive, expired, soldOut, redeemed }
+
+const Map<_CouponFilter, String> _filterLabels = {
+  _CouponFilter.all: 'Todos',
+  _CouponFilter.active: 'Activos',
+  _CouponFilter.inactive: 'Dados de baja',
+  _CouponFilter.expired: 'Vencidos',
+  _CouponFilter.soldOut: 'Agotados',
+  _CouponFilter.redeemed: 'Canjeados',
+};
+
+bool _matchesFilter(AdminCoupon c, _CouponFilter f) {
+  switch (f) {
+    case _CouponFilter.all:
+      return true;
+    case _CouponFilter.active:
+      return c.status == CouponStatus.active;
+    case _CouponFilter.inactive:
+      return c.status == CouponStatus.inactive;
+    case _CouponFilter.expired:
+      return c.status == CouponStatus.expired;
+    case _CouponFilter.soldOut:
+      return c.status == CouponStatus.soldOut;
+    case _CouponFilter.redeemed:
+      // Un cupón puede estar activo Y canjeado a la vez, por eso este
+      // filtro va por el contador y no por `status`.
+      return c.redeemedCount > 0;
+  }
+}
+
+class _CouponsTab extends StatefulWidget {
   final List<AdminCoupon> coupons;
   final VoidCallback onCreate;
   final void Function(AdminCoupon) onEdit;
@@ -536,76 +696,271 @@ class _CouponsTab extends StatelessWidget {
   });
 
   @override
+  State<_CouponsTab> createState() => _CouponsTabState();
+}
+
+class _CouponsTabState extends State<_CouponsTab> {
+  _CouponFilter _filter = _CouponFilter.all;
+
+  @override
   Widget build(BuildContext context) {
+    final all = widget.coupons;
+    final active = all.where((c) => c.status == CouponStatus.active).length;
+    final inactive =
+        all.where((c) => c.status == CouponStatus.inactive).length;
+    final expired = all.where((c) => c.status == CouponStatus.expired).length;
+    final soldOut = all.where((c) => c.status == CouponStatus.soldOut).length;
+    final redeemed =
+        all.fold<int>(0, (sum, c) => sum + c.redeemedCount);
+    final availableSlots = all
+        .where((c) => c.status == CouponStatus.active)
+        .fold<int>(0, (sum, c) => sum + c.remainingCaptures);
+
+    final visible =
+        all.where((c) => _matchesFilter(c, _filter)).toList(growable: false);
+
     return Scaffold(
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: onCreate,
+        onPressed: widget.onCreate,
         icon: const Icon(Icons.add),
         label: const Text('Dar de alta'),
       ),
-      body: coupons.isEmpty
-          ? const Center(child: Text('Aún no hay cupones.'))
-          : ListView.separated(
-              scrollDirection: Axis.vertical,
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 90),
-              itemCount: coupons.length,
-              separatorBuilder: (_, __) => const SizedBox(height: 10),
-              itemBuilder: (context, i) {
-                final c = coupons[i];
-                return Card(
-                  margin: EdgeInsets.zero,
-                  child: ListTile(
-                    leading: _CouponThumbnail(coupon: c),
-                    title: Text(
-                      '${c.name}  •  ${c.discount}',
-                      style: const TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                    subtitle: Text(
-                      '${c.business}\n'
-                      'Categoría: ${c.category}\n'
-                      'ID: ${c.id}  ·  Token-id: ${c.tokenId}\n'
-                      'Vence: ${c.expiresAt}'
-                      '${c.latitude != null && c.longitude != null ? '\nUbicación: ${c.latitude!.toStringAsFixed(5)}, ${c.longitude!.toStringAsFixed(5)}' : ''}',
-                    ),
-                    isThreeLine: true,
-                    trailing: PopupMenuButton<String>(
-                      onSelected: (action) {
-                        switch (action) {
-                          case 'edit':
-                            onEdit(c);
-                            break;
-                          case 'toggle':
-                            onToggleActive(c);
-                            break;
-                          case 'delete':
-                            onDelete(c);
-                            break;
-                        }
-                      },
-                      itemBuilder: (context) => [
-                        const PopupMenuItem(
-                          value: 'edit',
-                          child: Text('Editar'),
+      body: Column(
+        children: [
+          _CouponStatsRow(
+            total: all.length,
+            active: active,
+            inactive: inactive,
+            expired: expired,
+            soldOut: soldOut,
+            redeemed: redeemed,
+            availableSlots: availableSlots,
+            selected: _filter,
+            onSelect: (f) => setState(() => _filter = f),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: all.isEmpty
+                ? const Center(child: Text('Aún no hay cupones.'))
+                : visible.isEmpty
+                    ? Center(
+                        child: Text(
+                          'No hay cupones en "${_filterLabels[_filter]}".',
                         ),
-                        PopupMenuItem(
-                          value: 'toggle',
-                          child: Text(c.active ? 'Dar de baja' : 'Dar de alta'),
-                        ),
-                        const PopupMenuItem(
-                          value: 'delete',
-                          child: Text(
-                            'Eliminar',
-                            style: TextStyle(color: AppColors.stampCoral),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
+                      )
+                    : ListView.separated(
+                        scrollDirection: Axis.vertical,
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 90),
+                        itemCount: visible.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 10),
+                        itemBuilder: (context, i) {
+                          final c = visible[i];
+                          return Card(
+                            margin: EdgeInsets.zero,
+                            child: ListTile(
+                              leading: _CouponThumbnail(coupon: c),
+                              title: Text(
+                                '${c.name}  •  ${c.discount}',
+                                style:
+                                    const TextStyle(fontWeight: FontWeight.w700),
+                              ),
+                              subtitle: Text(
+                                '${c.business}\n'
+                                'Tipo: ${kCouponTypeLabels[c.couponType] ?? c.couponType}\n'
+                                'Categoría: ${c.category}\n'
+                                'ID: ${c.id}  ·  Token-id: ${c.tokenId}\n'
+                                'Vence: ${c.expiresAt}'
+                                '${c.isExpired ? ' (vencido)' : ''}\n'
+                                'Capturas: ${c.capturesCount}/${c.maxCaptures}'
+                                '  ·  Canjeado: ${c.redeemedCount} '
+                                '${c.redeemedCount == 1 ? 'vez' : 'veces'}'
+                                '${c.latitude != null && c.longitude != null ? '\nUbicación: ${c.latitude!.toStringAsFixed(5)}, ${c.longitude!.toStringAsFixed(5)}' : ''}',
+                              ),
+                              isThreeLine: true,
+                              trailing: PopupMenuButton<String>(
+                                onSelected: (action) {
+                                  switch (action) {
+                                    case 'edit':
+                                      widget.onEdit(c);
+                                      break;
+                                    case 'toggle':
+                                      widget.onToggleActive(c);
+                                      break;
+                                    case 'delete':
+                                      widget.onDelete(c);
+                                      break;
+                                  }
+                                },
+                                itemBuilder: (context) => [
+                                  const PopupMenuItem(
+                                    value: 'edit',
+                                    child: Text('Editar'),
+                                  ),
+                                  PopupMenuItem(
+                                    value: 'toggle',
+                                    child: Text(
+                                      c.active ? 'Dar de baja' : 'Dar de alta',
+                                    ),
+                                  ),
+                                  const PopupMenuItem(
+                                    value: 'delete',
+                                    child: Text(
+                                      'Eliminar',
+                                      style:
+                                          TextStyle(color: AppColors.stampCoral),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+          ),
+        ],
+      ),
     );
   }
+}
+
+/// Fila de tarjetas con el resumen de cupones. Tocar una tarjeta filtra
+/// la lista de abajo; tocar la ya seleccionada quita el filtro.
+class _CouponStatsRow extends StatelessWidget {
+  final int total;
+  final int active;
+  final int inactive;
+  final int expired;
+  final int soldOut;
+  final int redeemed;
+  final int availableSlots;
+  final _CouponFilter selected;
+  final void Function(_CouponFilter) onSelect;
+
+  const _CouponStatsRow({
+    required this.total,
+    required this.active,
+    required this.inactive,
+    required this.expired,
+    required this.soldOut,
+    required this.redeemed,
+    required this.availableSlots,
+    required this.selected,
+    required this.onSelect,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final cards = <_StatCardData>[
+      _StatCardData('$total', 'Total', 'Ver todos', _CouponFilter.all),
+      _StatCardData(
+        '$active',
+        'Activos',
+        '$availableSlots cupos disponibles',
+        _CouponFilter.active,
+      ),
+      _StatCardData(
+        '$redeemed',
+        'Canjeados',
+        redeemed == 1 ? '1 vez' : '$redeemed veces',
+        _CouponFilter.redeemed,
+      ),
+      _StatCardData(
+        '$soldOut',
+        'Agotados',
+        'Sin cupos',
+        _CouponFilter.soldOut,
+      ),
+      _StatCardData(
+        '$expired',
+        'Vencidos',
+        'Fecha pasada',
+        _CouponFilter.expired,
+      ),
+      _StatCardData(
+        '$inactive',
+        'Dados de baja',
+        'Desactivados a mano',
+        _CouponFilter.inactive,
+      ),
+    ];
+
+    return Container(
+      color: Colors.white,
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: SizedBox(
+        height: 78,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          itemCount: cards.length,
+          separatorBuilder: (_, __) => const SizedBox(width: 8),
+          itemBuilder: (context, i) {
+            final d = cards[i];
+            final isSelected = d.filter != null && d.filter == selected;
+            return InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: d.filter == null
+                  ? null
+                  : () => onSelect(isSelected ? _CouponFilter.all : d.filter!),
+              child: Container(
+                width: 118,
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                decoration: BoxDecoration(
+                  color: isSelected
+                      ? AppColors.inkTeal.withOpacity(0.08)
+                      : Colors.grey.shade50,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: isSelected
+                        ? AppColors.inkTeal
+                        : Colors.grey.shade300,
+                    width: isSelected ? 1.6 : 1,
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      d.value,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w900,
+                        fontSize: 18,
+                        color: AppColors.inkTeal,
+                      ),
+                    ),
+                    Text(
+                      d.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    Text(
+                      d.subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 10, color: Colors.grey.shade600),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _StatCardData {
+  final String value;
+  final String label;
+  final String subtitle;
+  final _CouponFilter? filter;
+  const _StatCardData(this.value, this.label, this.subtitle, this.filter);
 }
 
 /// Miniatura del cupón: foto local recién elegida > foto ya subida en
@@ -642,6 +997,7 @@ class _CouponFormResult {
   final String name;
   final String business;
   final String discount;
+  final String couponType;
   final String expiresAt;
   final String category;
   final String? photoPath;
@@ -653,6 +1009,7 @@ class _CouponFormResult {
     this.name,
     this.business,
     this.discount,
+    this.couponType,
     this.expiresAt,
     this.category,
     this.photoPath,
@@ -665,7 +1022,9 @@ class _CouponFormResult {
 
 class _CouponFormDialog extends StatefulWidget {
   final AdminCoupon? initial;
-  const _CouponFormDialog({this.initial});
+  // Negocios asignados al administrador (nombres).
+  final List<String> businesses;
+  const _CouponFormDialog({this.initial, required this.businesses});
 
   @override
   State<_CouponFormDialog> createState() => _CouponFormDialogState();
@@ -676,11 +1035,10 @@ class _CouponFormDialogState extends State<_CouponFormDialog> {
   late final _nameCtrl = TextEditingController(
     text: widget.initial?.name ?? '',
   );
-  late final _businessCtrl = TextEditingController(
-    text: widget.initial?.business ?? '',
-  );
+  // Al editar se muestra solo el número ("20", "50") para porcentaje/dinero;
+  // para cupón por producto, el texto tal cual.
   late final _discountCtrl = TextEditingController(
-    text: widget.initial?.discount ?? '',
+    text: _initialDiscountText(),
   );
   late final _expiresCtrl = TextEditingController(
     text: widget.initial?.expiresAt ?? '',
@@ -692,6 +1050,10 @@ class _CouponFormDialogState extends State<_CouponFormDialog> {
     text: widget.initial?.tokenId ?? _generateTokenId(),
   );
 
+  late String? _business = widget.initial?.business;
+  late String _couponType = widget.initial?.couponType ?? 'porcentaje';
+  // Promoción elegida cuando el tipo es "producto" (2x1, 3x2, ...).
+  late String? _promo = _initialPromo();
   late String _category =
       widget.initial?.category ?? kCouponCategories.first;
   late int _maxCaptures = widget.initial?.maxCaptures ?? 1;
@@ -704,6 +1066,45 @@ class _CouponFormDialogState extends State<_CouponFormDialog> {
       : null;
 
   bool get _isEdit => widget.initial != null;
+
+  // Al editar un cupón cuyo negocio ya no está asignado a este admin,
+  // hay que elegir otro de la lista.
+  bool get _businessNoLongerAssigned =>
+      _isEdit && !widget.businesses.contains(widget.initial!.business);
+
+  String get _discountLabel {
+    switch (_couponType) {
+      case 'producto':
+        return 'Producto o promoción (ej. 2x1 en café)';
+      case 'dinero':
+        return 'Descuento en pesos (ej. 50)';
+      default:
+        return 'Descuento en % (ej. 20)';
+    }
+  }
+
+  String? _initialPromo() {
+    final i = widget.initial;
+    if (i == null || i.couponType != 'producto') return null;
+    return kProductPromos.contains(i.discount) ? i.discount : kOtherPromo;
+  }
+
+  String _initialDiscountText() {
+    final i = widget.initial;
+    if (i == null) return '';
+    if (i.couponType == 'producto') {
+      return kProductPromos.contains(i.discount) ? '' : i.discount;
+    }
+    return _plainDiscount(i.couponType, i.discount);
+  }
+
+  /// Texto final del descuento que se guarda en el cupón.
+  String _finalDiscount() {
+    if (_couponType == 'producto') {
+      return _promo == kOtherPromo ? _discountCtrl.text.trim() : (_promo ?? '');
+    }
+    return _formatDiscount(_couponType, _discountCtrl.text);
+  }
 
   @override
   void initState() {
@@ -786,7 +1187,6 @@ class _CouponFormDialogState extends State<_CouponFormDialog> {
   @override
   void dispose() {
     _nameCtrl.dispose();
-    _businessCtrl.dispose();
     _discountCtrl.dispose();
     _expiresCtrl.dispose();
     _tokenCtrl.dispose();
@@ -861,12 +1261,34 @@ class _CouponFormDialogState extends State<_CouponFormDialog> {
                 validator: (v) =>
                     (v == null || v.trim().isEmpty) ? 'Requerido' : null,
               ),
-              TextFormField(
-                controller: _businessCtrl,
+              // ── Negocio: solo los asignados a este administrador ──
+              DropdownButtonFormField<String>(
+                initialValue:
+                    widget.businesses.contains(_business) ? _business : null,
+                isExpanded: true,
                 style: const TextStyle(color: Colors.black),
-                decoration: const InputDecoration(labelText: 'Negocio'),
-                validator: (v) =>
-                    (v == null || v.trim().isEmpty) ? 'Requerido' : null,
+                decoration: InputDecoration(
+                  labelText: 'Negocio',
+                  helperText: _businessNoLongerAssigned
+                      ? '"${widget.initial!.business}" ya no está en tus '
+                          'negocios. Elige otro.'
+                      : null,
+                  helperMaxLines: 2,
+                ),
+                items: widget.businesses
+                    .map(
+                      (name) => DropdownMenuItem(
+                        value: name,
+                        child: Text(
+                          name,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: Colors.black),
+                        ),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (value) => setState(() => _business = value),
+                validator: (v) => v == null ? 'Selecciona un negocio' : null,
               ),
               DropdownButtonFormField<String>(
                 initialValue: _category,
@@ -885,6 +1307,34 @@ class _CouponFormDialogState extends State<_CouponFormDialog> {
                     .toList(),
                 onChanged: (value) {
                   if (value != null) setState(() => _category = value);
+                },
+              ),
+              // ── Tipo de cupón: producto / porcentaje / dinero ──
+              DropdownButtonFormField<String>(
+                initialValue: _couponType,
+                isExpanded: true,
+                style: const TextStyle(color: Colors.black),
+                decoration: const InputDecoration(labelText: 'Tipo de cupón'),
+                items: kCouponTypeLabels.entries
+                    .map(
+                      (e) => DropdownMenuItem(
+                        value: e.key,
+                        child: Text(
+                          e.value,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(color: Colors.black),
+                        ),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (value) {
+                  if (value == null || value == _couponType) return;
+                  setState(() {
+                    _couponType = value;
+                    // El valor anterior ya no aplica al nuevo tipo.
+                    _discountCtrl.clear();
+                    _promo = null;
+                  });
                 },
               ),
               const SizedBox(height: 8),
@@ -914,15 +1364,68 @@ class _CouponFormDialogState extends State<_CouponFormDialog> {
                   ),
                 ],
               ),
-              TextFormField(
-                controller: _discountCtrl,
-                style: const TextStyle(color: Colors.black),
-                decoration: const InputDecoration(
-                  labelText: 'Descuento (ej. 20%)',
+              // ── Descuento: depende del tipo de cupón ──
+              if (_couponType == 'producto') ...[
+                DropdownButtonFormField<String>(
+                  key: const ValueKey('promo-dropdown'),
+                  initialValue: _promo,
+                  isExpanded: true,
+                  style: const TextStyle(color: Colors.black),
+                  decoration: const InputDecoration(labelText: 'Promoción'),
+                  items: [...kProductPromos, kOtherPromo]
+                      .map(
+                        (p) => DropdownMenuItem(
+                          value: p,
+                          child: Text(
+                            p,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(color: Colors.black),
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (value) => setState(() => _promo = value),
+                  validator: (v) =>
+                      v == null ? 'Selecciona una promoción' : null,
                 ),
-                validator: (v) =>
-                    (v == null || v.trim().isEmpty) ? 'Requerido' : null,
-              ),
+                if (_promo == kOtherPromo)
+                  TextFormField(
+                    controller: _discountCtrl,
+                    style: const TextStyle(color: Colors.black),
+                    decoration: const InputDecoration(
+                      labelText: 'Describe la promoción (máx. 30)',
+                    ),
+                    validator: (v) {
+                      final t = (v ?? '').trim();
+                      if (t.isEmpty) return 'Requerido';
+                      if (t.length > 30) return 'Máximo 30 caracteres';
+                      return null;
+                    },
+                  ),
+              ] else
+                TextFormField(
+                  controller: _discountCtrl,
+                  style: const TextStyle(color: Colors.black),
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration: InputDecoration(
+                    labelText: _discountLabel,
+                    prefixText: _couponType == 'dinero' ? '\$ ' : null,
+                    suffixText: _couponType == 'porcentaje' ? '%' : null,
+                  ),
+                  validator: (v) {
+                    final t = (v ?? '').trim();
+                    if (t.isEmpty) return 'Requerido';
+                    final n = double.tryParse(t.replaceAll(',', '.'));
+                    if (n == null || n <= 0) {
+                      return 'Ingresa un número mayor a 0';
+                    }
+                    if (_couponType == 'porcentaje' && n > 100) {
+                      return 'Máximo 100%';
+                    }
+                    return null;
+                  },
+                ),
               TextFormField(
                 controller: _expiresCtrl,
                 readOnly: true,
@@ -966,8 +1469,9 @@ class _CouponFormDialogState extends State<_CouponFormDialog> {
               context,
               _CouponFormResult(
                 _nameCtrl.text.trim(),
-                _businessCtrl.text.trim(),
-                _discountCtrl.text.trim(),
+                _business!,
+                _finalDiscount(),
+                _couponType,
                 _expiresCtrl.text.trim(),
                 _category,
                 _photoPath,
@@ -1280,17 +1784,100 @@ class _MapPickerScreenState extends State<_MapPickerScreen> {
         _showMsg('Permiso denegado permanentemente. Actívalo en Ajustes.');
         return;
       }
+      // bestForNavigation exige al GPS la lectura más precisa posible
+      // (en vez de conformarse con la triangulación por Wi-Fi/red,
+      // que es lo que suele dar una ubicación "aproximada").
       final position = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
+          accuracy: LocationAccuracy.bestForNavigation,
         ),
       );
       _setSelected(LatLng(position.latitude, position.longitude), moveMap: true);
+      // position.accuracy es el radio de error en metros que reporta
+      // el propio GPS del teléfono: si sale muy alto (>50m), el
+      // problema es la señal/el modo de ubicación del dispositivo,
+      // no la app.
+      if (position.accuracy > 50) {
+        _showMsg(
+          'Ubicación con poca precisión (±${position.accuracy.round()} m). '
+          'Sal a espacio abierto o activa "Alta precisión" en Ubicación '
+          'del teléfono.',
+        );
+      }
     } catch (e) {
       _showMsg('No se pudo obtener la ubicación: $e');
     } finally {
       if (mounted) setState(() => _loadingLocation = false);
     }
+  }
+
+  // Palabras que suelen estorbar la búsqueda de POIs (no aportan nada
+  // que Nominatim pueda emparejar, y a veces sobran del todo).
+  static const _searchStopwords = {
+    'centro',
+    'méxico',
+    'mexico',
+    'mx',
+    'cerca',
+    'de',
+    'en',
+    'la',
+    'el',
+  };
+
+  /// Quita comas, el estado/país (ya cubiertos por countrycodes=mx) y
+  /// palabras de relleno, dejando solo lo que de verdad ayuda a
+  /// encontrar el lugar (ej. la marca y la localidad).
+  String _simplifyQuery(String query) {
+    final words = query
+        .replaceAll(',', ' ')
+        .split(RegExp(r'\s+'))
+        .where((w) => w.isNotEmpty)
+        .where((w) => !_searchStopwords.contains(w.toLowerCase()))
+        .toList();
+    return words.join(' ');
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchNominatim(String query) async {
+    // Sesga la búsqueda a un cuadro alrededor de donde está el mapa
+    // ahora mismo (viewbox), sin excluir resultados fuera de él
+    // (bounded=0): así "BBVA en Jojutla" encuentra primero las
+    // sucursales cercanas al punto donde ya estás viendo el mapa,
+    // en vez de devolver la primera coincidencia en cualquier parte
+    // del mundo.
+    final center = _selected ?? _defaultCenter;
+    const delta = 0.6; // ~60 km de margen alrededor del centro
+    final viewbox = '${center.longitude - delta},${center.latitude + delta},'
+        '${center.longitude + delta},${center.latitude - delta}';
+
+    final uri = Uri.parse(
+      'https://nominatim.openstreetmap.org/search'
+      '?format=json&limit=8&addressdetails=1'
+      '&accept-language=es&countrycodes=mx'
+      '&viewbox=$viewbox&bounded=0'
+      '&q=${Uri.encodeQueryComponent(query)}',
+    );
+    final res = await http
+        .get(
+          uri,
+          // Nominatim pide identificar la app en el User-Agent, pero en
+          // Flutter Web el navegador PROHÍBE fijar ese header a mano
+          // (lo ignora o lanza error) — por eso solo se envía fuera de
+          // la web. En web, Nominatim igualmente acepta la petición
+          // usando el User-Agent real del navegador.
+          headers: kIsWeb
+              ? null
+              // Los headers HTTP solo aceptan caracteres ASCII: nada
+              // de acentos ni "ñ" aquí, o Dart lanza una
+              // FormatException ("Invalid HTTP header field value").
+              : {'User-Agent': 'com.cuponapp.app (CuponApp)'},
+        )
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode != 200) {
+      throw HttpException('código ${res.statusCode}');
+    }
+    final data = jsonDecode(res.body) as List<dynamic>;
+    return data.cast<Map<String, dynamic>>();
   }
 
   Future<void> _searchAddress() async {
@@ -1301,37 +1888,25 @@ class _MapPickerScreenState extends State<_MapPickerScreen> {
       _searchResults = [];
     });
     try {
-      final uri = Uri.parse(
-        'https://nominatim.openstreetmap.org/search'
-        '?format=json&limit=5&addressdetails=0&q=${Uri.encodeQueryComponent(query)}',
-      );
-      final res = await http
-          .get(
-            uri,
-            // Nominatim pide identificar la app en el User-Agent, pero en
-            // Flutter Web el navegador PROHÍBE fijar ese header a mano
-            // (lo ignora o lanza error) — por eso solo se envía fuera de
-            // la web. En web, Nominatim igualmente acepta la petición
-            // usando el User-Agent real del navegador.
-            headers: kIsWeb
-                ? null
-                // Los headers HTTP solo aceptan caracteres ASCII: nada
-                // de acentos ni "ñ" aquí, o Dart lanza una
-                // FormatException ("Invalid HTTP header field value").
-                : {'User-Agent': 'com.cuponapp.app (CuponApp)'},
-          )
-          .timeout(const Duration(seconds: 10));
-      if (res.statusCode == 200) {
-        final data = jsonDecode(res.body) as List<dynamic>;
-        if (!mounted) return;
-        setState(() {
-          _searchResults = data.cast<Map<String, dynamic>>();
-        });
-        if (_searchResults.isEmpty) {
-          _showMsg('No se encontraron resultados para "$query".');
-        }
-      } else {
-        _showMsg('No se pudo buscar la dirección (código ${res.statusCode}).');
+      var results = await _fetchNominatim(query);
+
+      // Si la búsqueda tal cual no encontró nada, reintenta una vez
+      // con una versión más simple (sin comas ni palabras de relleno
+      // como "centro" o "méxico"), que suele funcionar mejor con
+      // nombres de comercios.
+      final simplified = _simplifyQuery(query);
+      if (results.isEmpty && simplified.isNotEmpty && simplified != query) {
+        results = await _fetchNominatim(simplified);
+      }
+
+      if (!mounted) return;
+      setState(() => _searchResults = results);
+      if (_searchResults.isEmpty) {
+        _showMsg(
+          'No se encontraron resultados para "$query". Prueba solo con '
+          'la marca y la localidad (ej. "BBVA Axochiapan"), o marca el '
+          'punto directamente en el mapa.',
+        );
       }
     } on TimeoutException {
       _showMsg('La búsqueda tardó demasiado. Intenta de nuevo.');
@@ -1376,7 +1951,7 @@ class _MapPickerScreenState extends State<_MapPickerScreen> {
                     width: 18,
                     child: CircularProgressIndicator(
                       strokeWidth: 2,
-                      color: Colors.white,
+                      color: Colors.black,
                     ),
                   )
                 : const Icon(Icons.my_location),

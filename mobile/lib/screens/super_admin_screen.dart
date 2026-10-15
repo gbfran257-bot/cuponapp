@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
+import 'contract_screen.dart';
 
 /// ─────────────────────────────────────────────────────────────
 /// Modelos locales para el panel de súper admin, poblados con
@@ -11,13 +12,52 @@ class Business {
   final String id;
   String name;
   bool active;
+  String? adminId;
+  String? adminName;
+  String address;
+  String phone;
+  double commissionProduct;
+  double commissionPercent;
+  double commissionMoney;
+  String contactName;
+  String contactEmail;
+  String rfc;
+  String description;
 
-  Business({required this.id, required this.name, this.active = true});
+  Business({
+    required this.id,
+    required this.name,
+    this.active = true,
+    this.adminId,
+    this.adminName,
+    this.address = '',
+    this.phone = '',
+    this.commissionProduct = 0,
+    this.commissionPercent = 0,
+    this.commissionMoney = 0,
+    this.contactName = '',
+    this.contactEmail = '',
+    this.rfc = '',
+    this.description = '',
+  });
+
+  static double _d(dynamic v) => double.tryParse(v?.toString() ?? '') ?? 0;
 
   factory Business.fromJson(Map<String, dynamic> json) => Business(
-        id: json['id'] as String,
+        id: json['id'].toString(),
         name: json['name'] as String,
         active: json['active'] as bool? ?? true,
+        adminId: json['adminId']?.toString(),
+        adminName: json['adminName'] as String?,
+        address: json['address'] as String? ?? '',
+        phone: json['phone'] as String? ?? '',
+        commissionProduct: _d(json['commissionProduct']),
+        commissionPercent: _d(json['commissionPercent']),
+        commissionMoney: _d(json['commissionMoney']),
+        contactName: json['contactName'] as String? ?? '',
+        contactEmail: json['contactEmail'] as String? ?? '',
+        rfc: json['rfc'] as String? ?? '',
+        description: json['description'] as String? ?? '',
       );
 }
 
@@ -35,7 +75,7 @@ class AdminUser {
   });
 
   factory AdminUser.fromJson(Map<String, dynamic> json) => AdminUser(
-        id: json['id'] as String,
+        id: json['id'].toString(),
         name: json['name'] as String,
         email: json['email'] as String,
         active: json['active'] as bool? ?? true,
@@ -56,7 +96,7 @@ class AppUser {
   });
 
   factory AppUser.fromJson(Map<String, dynamic> json) => AppUser(
-        id: json['id'] as String,
+        id: json['id'].toString(),
         name: json['name'] as String,
         email: json['email'] as String,
         active: json['active'] as bool? ?? true,
@@ -92,6 +132,103 @@ class _StatDetail {
   const _StatDetail(this.title, [this.subtitle = '']);
 }
 
+String _money(double v) => '\$${v.toStringAsFixed(2)}';
+
+double _asDouble(dynamic v) => double.tryParse(v?.toString() ?? '') ?? 0;
+
+/// Subtítulo que se muestra debajo de cada tarjeta del Panorama.
+const Map<String, String> _statSubtitles = {
+  'Negocios activos': 'Ver negocios',
+  'Administradores': 'Ver administradores',
+  'Usuarios': 'Ver usuarios',
+  'Cupones activos': 'Ver cupones',
+  'Cupones canjeados (mes)': 'Ver y marcar pagados',
+  'Ganancias del mes': 'Comisiones pagadas del mes',
+  'Ganancias totales': 'Comisiones pagadas',
+};
+
+class _EarningsRow {
+  final String title;
+  final String detail;
+  final int count;
+  final double total;
+  const _EarningsRow(this.title, this.detail, this.count, this.total);
+}
+
+class _EarningsPeriod {
+  final double total;
+  final int count;
+  final List<_EarningsRow> byType;
+  final List<_EarningsRow> byBusiness;
+
+  const _EarningsPeriod({
+    required this.total,
+    required this.count,
+    required this.byType,
+    required this.byBusiness,
+  });
+
+  factory _EarningsPeriod.fromJson(Map<String, dynamic> j) {
+    const typeLabels = {
+      'producto': 'Cupón por producto',
+      'porcentaje': 'Cupón con descuento en %',
+      'dinero': 'Cupón con descuento en \$',
+    };
+    return _EarningsPeriod(
+      total: _asDouble(j['total']),
+      count: (j['count'] as num?)?.toInt() ?? 0,
+      byType: (j['byType'] as List).map((t) {
+        final m = t as Map<String, dynamic>;
+        return _EarningsRow(
+          typeLabels[m['type']] ?? m['type'].toString(),
+          '',
+          (m['count'] as num?)?.toInt() ?? 0,
+          _asDouble(m['total']),
+        );
+      }).toList(),
+      byBusiness: (j['byBusiness'] as List).map((b) {
+        final m = b as Map<String, dynamic>;
+        return _EarningsRow(
+          m['name'].toString(),
+          'Admin: ${m['adminName'] ?? 'Sin asignar'}',
+          (m['count'] as num?)?.toInt() ?? 0,
+          _asDouble(m['total']),
+        );
+      }).toList(),
+    );
+  }
+
+  static String _canjes(int n) => '$n canje${n == 1 ? '' : 's'}';
+
+  List<_StatDetail> toDetails() {
+    return [
+      _StatDetail('Total: ${_money(total)}', _canjes(count)),
+      const _StatDetail('— Por tipo de cupón —'),
+      ...byType.map(
+        (r) => _StatDetail(r.title, '${_canjes(r.count)} · ${_money(r.total)}'),
+      ),
+      const _StatDetail('— Por negocio —'),
+      ...byBusiness.map(
+        (r) => _StatDetail(
+          r.title,
+          '${r.detail} · ${_canjes(r.count)} · ${_money(r.total)}',
+        ),
+      ),
+    ];
+  }
+}
+
+class _Earnings {
+  final _EarningsPeriod month;
+  final _EarningsPeriod all;
+  const _Earnings(this.month, this.all);
+
+  factory _Earnings.fromJson(Map<String, dynamic> j) => _Earnings(
+        _EarningsPeriod.fromJson(j['month'] as Map<String, dynamic>),
+        _EarningsPeriod.fromJson(j['all'] as Map<String, dynamic>),
+      );
+}
+
 class SuperAdminScreen extends StatefulWidget {
   const SuperAdminScreen({super.key});
 
@@ -118,11 +255,12 @@ class _SuperAdminScreenState extends State<SuperAdminScreen>
   List<Business> _businesses = [];
   List<AdminUser> _admins = [];
   List<AppUser> _users = [];
+  _Earnings? _earnings;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 4, vsync: this);
+    _tabController = TabController(length: 5, vsync: this);
     _loadAll();
   }
 
@@ -142,11 +280,15 @@ class _SuperAdminScreenState extends State<SuperAdminScreen>
       final businessesData = await apiService.getBusinesses();
       final adminsData = await apiService.getAdmins();
       final usersData = await apiService.getUsers();
+      final earnings = _Earnings.fromJson(await apiService.getEarnings());
 
       final stats = Map<String, String>.from(statsData['stats'] as Map);
       stats['Usuarios'] = usersData.length.toString();
+      stats['Ganancias del mes'] = _money(earnings.month.total);
+      stats['Ganancias totales'] = _money(earnings.all.total);
 
       setState(() {
+        _earnings = earnings;
         _stats = stats;
         _activeCoupons = (statsData['activeCoupons'] as List)
             .map((c) => _CouponSummary.fromJson(c as Map<String, dynamic>))
@@ -170,9 +312,10 @@ class _SuperAdminScreenState extends State<SuperAdminScreen>
         _loadError = e.message;
         _loading = false;
       });
-    } catch (e) {
+    } catch (e, st) {
+      debugPrint('Error en _loadAll: $e\n$st');
       setState(() {
-        _loadError = 'No se pudo conectar con el servidor. Revisa tu conexión.';
+        _loadError = 'Error al cargar los datos: $e';
         _loading = false;
       });
     }
@@ -185,10 +328,16 @@ class _SuperAdminScreenState extends State<SuperAdminScreen>
   // ── Negocios ─────────────────────────────────────────────────
 
   Future<void> _addBusiness() async {
-    final name = await _showNameDialog(title: 'Agregar negocio');
-    if (name == null) return;
+    final data = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (_) => _BusinessFormDialog(
+        title: 'Agregar negocio',
+        admins: _admins.where((a) => a.active).toList(),
+      ),
+    );
+    if (data == null) return;
     try {
-      await apiService.createBusiness(name);
+      await apiService.createBusiness(data);
       await _loadAll();
       _showMsg('Negocio agregado ✅');
     } on ApiException catch (e) {
@@ -199,13 +348,17 @@ class _SuperAdminScreenState extends State<SuperAdminScreen>
   }
 
   Future<void> _editBusiness(Business business) async {
-    final name = await _showNameDialog(
-      title: 'Editar negocio',
-      initialName: business.name,
+    final data = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (_) => _BusinessFormDialog(
+        title: 'Editar negocio',
+        business: business,
+        admins: _admins.where((a) => a.active).toList(),
+      ),
     );
-    if (name == null) return;
+    if (data == null) return;
     try {
-      await apiService.updateBusiness(business.id, name);
+      await apiService.updateBusiness(business.id, data);
       await _loadAll();
       _showMsg('Negocio actualizado ✅');
     } on ApiException catch (e) {
@@ -229,7 +382,8 @@ class _SuperAdminScreenState extends State<SuperAdminScreen>
   Future<void> _removeBusiness(Business business) async {
     final confirmed = await _confirmRemove(
       title: 'Eliminar negocio',
-      message: '¿Eliminar "${business.name}"? Sus cupones quedarán sin negocio asignado.',
+      message:
+          '¿Eliminar "${business.name}"? Sus cupones quedarán sin negocio asignado.',
     );
     if (confirmed != true) return;
     try {
@@ -241,42 +395,6 @@ class _SuperAdminScreenState extends State<SuperAdminScreen>
     } catch (e) {
       _showMsg('No se pudo conectar con el servidor.', error: true);
     }
-  }
-
-  Future<String?> _showNameDialog({
-    required String title,
-    String? initialName,
-  }) {
-    final ctrl = TextEditingController(text: initialName ?? '');
-    final formKey = GlobalKey<FormState>();
-    return showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: Form(
-          key: formKey,
-          child: TextFormField(
-            controller: ctrl,
-            decoration: const InputDecoration(labelText: 'Nombre del negocio'),
-            validator: (v) =>
-                (v == null || v.trim().length < 2) ? 'Nombre inválido' : null,
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancelar'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              if (!formKey.currentState!.validate()) return;
-              Navigator.pop(context, ctrl.text.trim());
-            },
-            child: const Text('Guardar'),
-          ),
-        ],
-      ),
-    );
   }
 
   // ── Administradores ─────────────────────────────────────────
@@ -446,8 +564,8 @@ class _SuperAdminScreenState extends State<SuperAdminScreen>
     return showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text(title),
-        content: Text(message),
+        title: Text(title, style: const TextStyle(color: Colors.black)),
+        content: Text(message, style: const TextStyle(color: Colors.black)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -488,6 +606,16 @@ class _SuperAdminScreenState extends State<SuperAdminScreen>
         return;
       case 'Usuarios':
         _tabController.animateTo(_tabUsers);
+        return;
+      case 'Cupones canjeados (mes)':
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const _RedemptionsScreen()),
+        ).then((_) {
+          // Al volver, recargamos para reflejar en Ganancias lo que
+          // se marcó como pagado.
+          if (mounted) _loadAll();
+        });
         return;
       default:
         Navigator.push(
@@ -536,6 +664,8 @@ class _SuperAdminScreenState extends State<SuperAdminScreen>
       'Cupones canjeados (mes)': _redeemedThisMonth
           .map((r) => _StatDetail(r.couponName, '${r.business} · ${r.date}'))
           .toList(),
+      'Ganancias del mes': _earnings?.month.toDetails() ?? [],
+      'Ganancias totales': _earnings?.all.toDetails() ?? [],
     };
 
     return Scaffold(
@@ -543,8 +673,9 @@ class _SuperAdminScreenState extends State<SuperAdminScreen>
         title: const Text('Súper administrador'),
         bottom: TabBar(
           controller: _tabController,
-          labelColor: Colors.white,
-          indicatorColor: Colors.white,
+          labelColor: Colors.black,
+          unselectedLabelColor: Colors.black54,
+          indicatorColor: Colors.black,
           isScrollable: true,
           tabs: const [
             Tab(icon: Icon(Icons.dashboard_outlined), text: 'Panorama'),
@@ -554,6 +685,7 @@ class _SuperAdminScreenState extends State<SuperAdminScreen>
               text: 'Administradores',
             ),
             Tab(icon: Icon(Icons.people_outline), text: 'Usuarios'),
+            Tab(icon: Icon(Icons.description_outlined), text: 'Contratos'),
           ],
         ),
         actions: [
@@ -608,6 +740,7 @@ class _SuperAdminScreenState extends State<SuperAdminScreen>
             onToggleActive: _toggleUserActive,
             onRemove: _removeUser,
           ),
+          const ContractsScreen(),
         ],
       ),
     );
@@ -629,73 +762,343 @@ class _OverviewTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final entries = stats.entries.toList();
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
-      child: GridView.count(
+      child: GridView.builder(
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
-        crossAxisCount: 2,
-        mainAxisSpacing: 12,
-        crossAxisSpacing: 12,
-        // Antes 1.4 (tarjetas demasiado bajas para el número + la
-        // etiqueta, por eso se veía "BOTTOM OVERFLOWED"). Con 1.0
-        // queda más cuadrada y le da a los textos el alto que
-        // necesitan sin recortarse.
-        childAspectRatio: 1.0,
-        children: stats.entries.map((e) {
+        // Tarjetas compactas de alto fijo: se adaptan al ancho de la
+        // pantalla (2 columnas en celular, más en escritorio) y nunca
+        // se desbordan.
+        gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+          maxCrossAxisExtent: 190,
+          mainAxisExtent: 96,
+          mainAxisSpacing: 10,
+          crossAxisSpacing: 10,
+        ),
+        itemCount: entries.length,
+        itemBuilder: (context, i) {
+          final e = entries[i];
           return InkWell(
-            borderRadius: BorderRadius.circular(15),
+            borderRadius: BorderRadius.circular(12),
             onTap: () => onOpenDetail(e.key, details[e.key] ?? const []),
             child: Container(
               decoration: BoxDecoration(
                 color: Colors.white,
-                borderRadius: BorderRadius.circular(15),
-                border: Border.all(color: Colors.grey.shade300, width: 2),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.grey.shade300, width: 1.5),
               ),
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisAlignment: MainAxisAlignment.center,
-                mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
                     e.value,
-                    // Antes displaySmall: mucho más grande de lo que
-                    // cabía en la tarjeta. headlineSmall es más chico
-                    // pero se sigue viendo como número protagonista.
-                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
                           color: AppColors.inkTeal,
                           fontWeight: FontWeight.w900,
                         ),
                   ),
-                  const SizedBox(height: 4),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Expanded(
-                        child: Text(
-                          e.key,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodySmall
-                              ?.copyWith(height: 1.15),
-                        ),
-                      ),
-                      Icon(
-                        Icons.chevron_right,
-                        size: 18,
-                        color: Colors.grey.shade500,
-                      ),
-                    ],
+                  const SizedBox(height: 2),
+                  Text(
+                    e.key,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  Text(
+                    _statSubtitles[e.key] ?? 'Ver detalle',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
                   ),
                 ],
               ),
             ),
           );
-        }).toList(),
+        },
       ),
+    );
+  }
+}
+
+/// ─────────────── CANJES DEL MES + BOTÓN "PAGADO" ───────────────
+
+const Map<String, String> _couponTypeShort = {
+  'producto': 'Producto',
+  'porcentaje': 'Porcentaje (%)',
+  'dinero': 'Dinero (\$)',
+};
+
+class _RedemptionRow {
+  final int id;
+  final String couponName;
+  final String business;
+  final String adminName;
+  final String? couponType; // null = canje anterior al sistema de comisiones
+  final double commission;
+  final String date;
+  final bool paid;
+
+  const _RedemptionRow({
+    required this.id,
+    required this.couponName,
+    required this.business,
+    required this.adminName,
+    required this.couponType,
+    required this.commission,
+    required this.date,
+    required this.paid,
+  });
+
+  factory _RedemptionRow.fromJson(Map<String, dynamic> j) => _RedemptionRow(
+        id: (j['id'] as num).toInt(),
+        couponName: j['couponName'].toString(),
+        business: j['business']?.toString() ?? '',
+        adminName: j['adminName']?.toString() ?? 'Sin asignar',
+        couponType: j['couponType'] as String?,
+        commission: _asDouble(j['commission']),
+        date: j['date'].toString(),
+        paid: j['paid'] as bool? ?? false,
+      );
+}
+
+class _RedemptionsScreen extends StatefulWidget {
+  const _RedemptionsScreen();
+
+  @override
+  State<_RedemptionsScreen> createState() => _RedemptionsScreenState();
+}
+
+class _RedemptionsScreenState extends State<_RedemptionsScreen> {
+  bool _loading = true;
+  String? _error;
+  List<_RedemptionRow> _rows = [];
+  int? _payingId;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load({bool silent = false}) async {
+    if (!silent) {
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+    }
+    try {
+      final data = await apiService.getMonthRedemptions();
+      if (!mounted) return;
+      setState(() {
+        _rows = data
+            .map((r) => _RedemptionRow.fromJson(r as Map<String, dynamic>))
+            .toList();
+        _loading = false;
+      });
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.message;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = 'Error al cargar los canjes: $e';
+        _loading = false;
+      });
+    }
+  }
+
+  void _showMsg(String msg, {bool error = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(msg),
+        backgroundColor: error ? AppColors.stampCoral : null,
+      ),
+    );
+  }
+
+  Future<void> _markPaid(_RedemptionRow r) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text(
+          'Marcar como pagado',
+          style: TextStyle(color: Colors.black),
+        ),
+        content: Text(
+          '¿Ya se pagó la comisión de "${r.couponName}" '
+          '(${_money(r.commission)})?\n\n'
+          'Al confirmar, se sumará a las ganancias.',
+          style: const TextStyle(color: Colors.black),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(minimumSize: const Size(0, 40)),
+            child: const Text('Pagado'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    setState(() => _payingId = r.id);
+    try {
+      await apiService.markRedemptionPaid(r.id.toString());
+      await _load(silent: true);
+      _showMsg('Marcado como pagado ✅');
+    } on ApiException catch (e) {
+      _showMsg(e.message, error: true);
+    } catch (e) {
+      _showMsg('No se pudo conectar con el servidor.', error: true);
+    } finally {
+      if (mounted) setState(() => _payingId = null);
+    }
+  }
+
+  Widget _trailing(_RedemptionRow r) {
+    if (r.couponType == null) {
+      return Text(
+        'Sin comisión',
+        style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+      );
+    }
+    if (r.paid) {
+      return const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.check_circle, color: Colors.green, size: 18),
+          SizedBox(width: 4),
+          Text(
+            'Pagado',
+            style: TextStyle(
+              color: Colors.green,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      );
+    }
+    if (_payingId == r.id) {
+      return const SizedBox(
+        width: 22,
+        height: 22,
+        child: CircularProgressIndicator(strokeWidth: 2.2),
+      );
+    }
+    return ElevatedButton(
+      onPressed: () => _markPaid(r),
+      style: ElevatedButton.styleFrom(
+        minimumSize: const Size(0, 36),
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+      ),
+      child: const Text('Pagado'),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pending = _rows
+        .where((r) => r.couponType != null && !r.paid)
+        .fold<double>(0, (sum, r) => sum + r.commission);
+    final paid = _rows
+        .where((r) => r.paid)
+        .fold<double>(0, (sum, r) => sum + r.commission);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Cupones canjeados (mes)'),
+        actions: [
+          IconButton(
+            onPressed: _load,
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Actualizar',
+          ),
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _error != null
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(_error!, textAlign: TextAlign.center),
+                        const SizedBox(height: 16),
+                        ElevatedButton(
+                          onPressed: _load,
+                          child: const Text('Reintentar'),
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              : Column(
+                  children: [
+                    Container(
+                      width: double.infinity,
+                      color: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 10,
+                      ),
+                      child: Text(
+                        'Por cobrar: ${_money(pending)}   ·   '
+                        'Pagado: ${_money(paid)}',
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                    const Divider(height: 1),
+                    Expanded(
+                      child: _rows.isEmpty
+                          ? const Center(
+                              child: Text('No hay canjes este mes.'),
+                            )
+                          : ListView.separated(
+                              padding: const EdgeInsets.symmetric(vertical: 8),
+                              itemCount: _rows.length,
+                              separatorBuilder: (_, __) =>
+                                  const Divider(height: 1),
+                              itemBuilder: (context, i) {
+                                final r = _rows[i];
+                                return ListTile(
+                                  isThreeLine: r.couponType != null,
+                                  title: Text(
+                                    r.couponName,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  subtitle: Text(
+                                    '${r.business} · Admin: ${r.adminName}\n'
+                                    '${r.date}'
+                                    '${r.couponType == null ? '' : '\nTipo: ${_couponTypeShort[r.couponType] ?? r.couponType} · Comisión: ${_money(r.commission)}'}',
+                                  ),
+                                  trailing: _trailing(r),
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                ),
     );
   }
 }
@@ -769,6 +1172,7 @@ class _BusinessesTab extends StatelessWidget {
                 return Card(
                   margin: EdgeInsets.zero,
                   child: ListTile(
+                    isThreeLine: true,
                     leading: CircleAvatar(
                       backgroundColor:
                           b.active ? AppColors.inkTeal : Colors.grey.shade400,
@@ -778,7 +1182,13 @@ class _BusinessesTab extends StatelessWidget {
                       b.name,
                       style: const TextStyle(fontWeight: FontWeight.w700),
                     ),
-                    subtitle: Text(b.active ? 'Activo' : 'Inactivo'),
+                    subtitle: Text(
+                      [
+                        b.active ? 'Activo' : 'Inactivo',
+                        'Admin: ${b.adminName ?? 'Sin asignar'}',
+                        if (b.phone.isNotEmpty) 'Tel: ${b.phone}',
+                      ].join('\n'),
+                    ),
                     trailing: PopupMenuButton<String>(
                       onSelected: (action) {
                         switch (action) {
@@ -815,6 +1225,271 @@ class _BusinessesTab extends StatelessWidget {
                 );
               },
             ),
+    );
+  }
+}
+
+/// ─────────────────────── FORMULARIO: NEGOCIO ───────────────────────
+
+class _BusinessFormDialog extends StatefulWidget {
+  final String title;
+  final Business? business;
+  final List<AdminUser> admins;
+
+  const _BusinessFormDialog({
+    required this.title,
+    required this.admins,
+    this.business,
+  });
+
+  @override
+  State<_BusinessFormDialog> createState() => _BusinessFormDialogState();
+}
+
+class _BusinessFormDialogState extends State<_BusinessFormDialog> {
+  final _formKey = GlobalKey<FormState>();
+
+  // Texto de los campos, del título y del menú desplegable: siempre negro.
+  static const _black = TextStyle(color: Colors.black);
+
+  static String _fmt(double? v) => (v == null || v == 0) ? '' : v.toString();
+
+  late final _name = TextEditingController(text: widget.business?.name ?? '');
+  late final _address =
+      TextEditingController(text: widget.business?.address ?? '');
+  late final _phone = TextEditingController(text: widget.business?.phone ?? '');
+  late final _commProduct =
+      TextEditingController(text: _fmt(widget.business?.commissionProduct));
+  late final _commPercent =
+      TextEditingController(text: _fmt(widget.business?.commissionPercent));
+  late final _commMoney =
+      TextEditingController(text: _fmt(widget.business?.commissionMoney));
+  late final _contactName =
+      TextEditingController(text: widget.business?.contactName ?? '');
+  late final _contactEmail =
+      TextEditingController(text: widget.business?.contactEmail ?? '');
+  late final _rfc = TextEditingController(text: widget.business?.rfc ?? '');
+  late final _description =
+      TextEditingController(text: widget.business?.description ?? '');
+
+  String? _adminId;
+
+  @override
+  void initState() {
+    super.initState();
+    _adminId = widget.business?.adminId;
+  }
+
+  @override
+  void dispose() {
+    for (final c in [
+      _name,
+      _address,
+      _phone,
+      _commProduct,
+      _commPercent,
+      _commMoney,
+      _contactName,
+      _contactEmail,
+      _rfc,
+      _description,
+    ]) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  /// Vacío = 0. Si hay texto, debe ser un número >= 0.
+  String? _money(String? v) {
+    if (v == null || v.trim().isEmpty) return null;
+    final n = double.tryParse(v.trim());
+    return (n == null || n < 0) ? 'Monto inválido' : null;
+  }
+
+  double _num(TextEditingController c) => double.tryParse(c.text.trim()) ?? 0;
+
+  Widget _section(String text) => Padding(
+        padding: const EdgeInsets.only(top: 16, bottom: 4),
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            text,
+            style: const TextStyle(
+              fontWeight: FontWeight.w800,
+              color: Colors.black,
+            ),
+          ),
+        ),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(
+        widget.title,
+        style: const TextStyle(
+          color: Colors.black,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: SingleChildScrollView(
+          child: Form(
+            key: _formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _section('Datos del negocio'),
+                TextFormField(
+                  controller: _name,
+                  style: _black,
+                  decoration:
+                      const InputDecoration(labelText: 'Nombre del negocio *'),
+                  validator: (v) => (v == null || v.trim().length < 2)
+                      ? 'Nombre inválido'
+                      : null,
+                ),
+                TextFormField(
+                  controller: _address,
+                  style: _black,
+                  decoration: const InputDecoration(labelText: 'Dirección'),
+                ),
+                TextFormField(
+                  controller: _phone,
+                  style: _black,
+                  keyboardType: TextInputType.phone,
+                  decoration: const InputDecoration(labelText: 'Teléfono'),
+                ),
+                TextFormField(
+                  controller: _description,
+                  style: _black,
+                  maxLines: 2,
+                  decoration: const InputDecoration(
+                    labelText: 'Descripción / giro del negocio',
+                  ),
+                ),
+
+                _section('Administrador asignado'),
+                DropdownButtonFormField<String>(
+                  value: widget.admins.any((a) => a.id == _adminId)
+                      ? _adminId
+                      : null,
+                  isExpanded: true,
+                  style: _black,
+                  decoration:
+                      const InputDecoration(labelText: 'Administrador *'),
+                  items: widget.admins
+                      .map(
+                        (a) => DropdownMenuItem(
+                          value: a.id,
+                          child: Text(
+                            '${a.name} (${a.email})',
+                            overflow: TextOverflow.ellipsis,
+                            style: _black,
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (v) => setState(() => _adminId = v),
+                  validator: (v) =>
+                      v == null ? 'Selecciona un administrador' : null,
+                ),
+
+                _section('Comisiones (MXN por cupón)'),
+                TextFormField(
+                  controller: _commProduct,
+                  style: _black,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: 'Cupón por producto',
+                    prefixText: '\$ ',
+                  ),
+                  validator: _money,
+                ),
+                TextFormField(
+                  controller: _commPercent,
+                  style: _black,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: 'Cupón con descuento en %',
+                    prefixText: '\$ ',
+                  ),
+                  validator: _money,
+                ),
+                TextFormField(
+                  controller: _commMoney,
+                  style: _black,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: 'Cupón con descuento en \$',
+                    prefixText: '\$ ',
+                  ),
+                  validator: _money,
+                ),
+
+                _section('Contacto y datos fiscales'),
+                TextFormField(
+                  controller: _contactName,
+                  style: _black,
+                  decoration:
+                      const InputDecoration(labelText: 'Nombre del contacto'),
+                ),
+                TextFormField(
+                  controller: _contactEmail,
+                  style: _black,
+                  keyboardType: TextInputType.emailAddress,
+                  decoration:
+                      const InputDecoration(labelText: 'Correo de contacto'),
+                  validator: (v) =>
+                      (v != null && v.trim().isNotEmpty && !v.contains('@'))
+                          ? 'Correo inválido'
+                          : null,
+                ),
+                TextFormField(
+                  controller: _rfc,
+                  style: _black,
+                  textCapitalization: TextCapitalization.characters,
+                  decoration: const InputDecoration(labelText: 'RFC'),
+                  validator: (v) => (v != null && v.trim().length > 13)
+                      ? 'Máximo 13 caracteres'
+                      : null,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          style: TextButton.styleFrom(foregroundColor: Colors.black),
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancelar'),
+        ),
+        ElevatedButton(
+          onPressed: () {
+            if (!_formKey.currentState!.validate()) return;
+            Navigator.pop(context, <String, dynamic>{
+              'name': _name.text.trim(),
+              'admin_id': int.parse(_adminId!),
+              'address': _address.text.trim(),
+              'phone': _phone.text.trim(),
+              'commission_product': _num(_commProduct),
+              'commission_percent': _num(_commPercent),
+              'commission_money': _num(_commMoney),
+              'contact_name': _contactName.text.trim(),
+              'contact_email': _contactEmail.text.trim(),
+              'rfc': _rfc.text.trim().toUpperCase(),
+              'description': _description.text.trim(),
+            });
+          },
+          child: Text(widget.business == null ? 'Agregar' : 'Guardar'),
+        ),
+      ],
     );
   }
 }
@@ -872,7 +1547,7 @@ class _PeopleTab<T> extends StatelessWidget {
                           active ? AppColors.inkTeal : Colors.grey.shade400,
                       child: Text(
                         name.isNotEmpty ? name[0].toUpperCase() : '?',
-                        style: const TextStyle(color: Colors.white),
+                        style: const TextStyle(color: Colors.black),
                       ),
                     ),
                     title: Text(
@@ -946,6 +1621,8 @@ class _PersonFormDialog extends StatefulWidget {
 
 class _PersonFormDialogState extends State<_PersonFormDialog> {
   final _formKey = GlobalKey<FormState>();
+  static const _black = TextStyle(color: Colors.black);
+
   late final _nameCtrl = TextEditingController(text: widget.initialName ?? '');
   late final _emailCtrl = TextEditingController(
     text: widget.initialEmail ?? '',
@@ -966,13 +1643,13 @@ class _PersonFormDialogState extends State<_PersonFormDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: Text(widget.title),
-      // El diálogo por defecto no crece con el contenido cuando el
-      // teclado aparece, y eso era lo que causaba el
-      // "BOTTOM OVERFLOWED" en la captura: el Form con sus 3 campos
-      // más el teclado ya no cabían. Con SingleChildScrollView el
-      // contenido se puede desplazar en vez de recortarse, y
-      // insetPadding le da margen para respirar en pantallas chicas.
+      title: Text(
+        widget.title,
+        style: const TextStyle(
+          color: Colors.black,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
       insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
       content: SingleChildScrollView(
         child: Form(
@@ -982,6 +1659,7 @@ class _PersonFormDialogState extends State<_PersonFormDialog> {
             children: [
               TextFormField(
                 controller: _nameCtrl,
+                style: _black,
                 decoration: const InputDecoration(labelText: 'Nombre completo'),
                 validator: (v) => (v == null || v.trim().length < 3)
                     ? 'Ingresa un nombre'
@@ -989,6 +1667,7 @@ class _PersonFormDialogState extends State<_PersonFormDialog> {
               ),
               TextFormField(
                 controller: _emailCtrl,
+                style: _black,
                 keyboardType: TextInputType.emailAddress,
                 decoration: const InputDecoration(
                   labelText: 'Correo electrónico',
@@ -998,6 +1677,7 @@ class _PersonFormDialogState extends State<_PersonFormDialog> {
               ),
               TextFormField(
                 controller: _passwordCtrl,
+                style: _black,
                 obscureText: _obscure,
                 decoration: InputDecoration(
                   labelText: _isEdit
@@ -1026,6 +1706,7 @@ class _PersonFormDialogState extends State<_PersonFormDialog> {
       ),
       actions: [
         TextButton(
+          style: TextButton.styleFrom(foregroundColor: Colors.black),
           onPressed: () => Navigator.pop(context),
           child: const Text('Cancelar'),
         ),
