@@ -66,5 +66,11 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+<string>Necesitamos la cámara para capturar cupones.</string>
+<key>NSLocationWhenInUseUsageDescription</key>
+<string>Necesitamos tu ubicación para mostrar cupones cercanos.</string>
+<key>NSPhotoLibraryUsageDescription</key>
+<string>Necesitamos acceso a tus fotos para adjuntar imágenes.</string>
 </dict>
 </plist>
