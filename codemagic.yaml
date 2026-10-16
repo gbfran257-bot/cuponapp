@@ -8,14 +8,30 @@ workflows:
       xcode: latest
       cocoapods: default
     scripts:
+      - name: Localizar el proyecto Flutter
+        script: |
+          PUBSPEC=$(find . -maxdepth 3 -name pubspec.yaml | head -n 1)
+          if [ -z "$PUBSPEC" ]; then
+            echo "No se encontro pubspec.yaml. Archivos en el repositorio:"
+            ls -la
+            exit 1
+          fi
+          APP_DIR=$(dirname "$PUBSPEC")
+          echo "Proyecto Flutter en: $APP_DIR"
+          echo "APP_DIR=$APP_DIR" >> $CM_ENV
       - name: Instalar dependencias de Flutter
-        script: flutter pub get
+        script: |
+          cd "$APP_DIR"
+          flutter pub get
       - name: Compilar iOS sin firma
-        script: flutter build ios --release --no-codesign
+        script: |
+          cd "$APP_DIR"
+          flutter build ios --release --no-codesign
       - name: Empaquetar el .ipa
         script: |
+          cd "$APP_DIR"
           mkdir -p Payload
           cp -R build/ios/iphoneos/Runner.app Payload/
-          zip -qr cuponapp.ipa Payload
+          zip -qr "$CM_BUILD_DIR/cuponapp.ipa" Payload
     artifacts:
       - cuponapp.ipa
